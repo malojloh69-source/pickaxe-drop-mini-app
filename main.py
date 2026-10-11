@@ -1,6 +1,6 @@
 """Pickaxe Drop: dependency-free Telegram Mini App and bot webhook.
 
-Run: PORT=3000 BOT_TOKEN=... WEBAPP_URL=https://... python main.py
+Run on Bothost: python main.py; hosting provides the bot token and domain.
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,68 @@ PICKAXES = (
     {"id": "iron", "name": "Железная", "max_hp": 150, "chance": 35},
     {"id": "diamond", "name": "Алмазная", "max_hp": 250, "chance": 15},
 )
+
+
+def public_app_url(raw: str) -> str:
+    """Normalize a hosting-provided domain without trusting request headers."""
+    value = raw.strip()
+    if not value or re.search(r"[\s\\]", value):
+        return ""
+    if "://" not in value:
+        value = "https:" + value if value.startswith("//") else "https://" + value
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username is not None:
+            return ""
+        if parsed.query or parsed.fragment:
+            return ""
+        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
+        labels = hostname.split(".")
+        if len(labels) < 2 or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels):
+            return ""
+        port = parsed.port
+        authority = hostname + (f":{port}" if port and port != 443 else "")
+        return "https://" + authority + parsed.path.rstrip("/")
+    except (ValueError, UnicodeError):
+        return ""
+
+
+def automatic_webhook_secret(bot_token: str) -> str:
+    # Stable across restarts; a public repository cannot reveal this derived key.
+    return hmac.new(bot_token.encode(), b"PickaxeDrop:telegram-webhook:v1", hashlib.sha256).hexdigest() if bot_token else ""
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    bot_token: str = field(repr=False)
+    webapp_url: str
+    webhook_secret: str = field(repr=False)
+    db_path: str
+    port: int
+    register_webhook: bool
+
+    @classmethod
+    def from_environment(cls, environ=None):
+        values = os.environ if environ is None else environ
+        token = next((values.get(key, "").strip() for key in
+                      ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "API_TOKEN") if values.get(key, "").strip()), "")
+        url = next((normalized for key in ("WEBAPP_URL", "DOMAIN")
+                    if (normalized := public_app_url(values.get(key, "")))), "")
+        if not url:
+            bot_id = values.get("BOT_ID", "").strip()
+            if re.fullmatch(r"bot[-_][A-Za-z0-9_-]+", bot_id):
+                url = public_app_url(bot_id.replace("_", "-") + ".bothost.tech")
+        secret = values.get("TELEGRAM_WEBHOOK_SECRET", "").strip() or automatic_webhook_secret(token)
+        if secret and not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", secret):
+            raise ValueError("Webhook secret must contain 1–256 Latin letters, digits, underscores or hyphens")
+        port = int(values.get("PORT", "").strip() or "3000")
+        if not 0 <= port <= 65535:
+            raise ValueError("PORT must be between 0 and 65535")
+        enabled = (values.get("REGISTER_WEBHOOK", "").strip() or "1").lower()
+        if enabled not in ("0", "1", "false", "true", "off", "on", "no", "yes"):
+            raise ValueError("REGISTER_WEBHOOK must be 0 or 1")
+        db_path = values.get("DATABASE_PATH", "").strip() or str(BASE_DIR / "data" / "pickaxe.sqlite3")
+        return cls(token, url, secret, db_path, port, enabled in ("1", "true", "on", "yes"))
 
 
 def verify_telegram_init_data(raw: str, bot_token: str, now: int | None = None) -> dict[str, Any] | None:
@@ -213,14 +276,25 @@ class GameServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], *, db_path: str | None = None,
                  bot_token: str | None = None, dev_mode: bool | None = None,
-                 webapp_url: str | None = None, webhook_secret: str | None = None):
-        self.db_path = db_path or os.getenv("DATABASE_PATH", str(BASE_DIR / "data" / "pickaxe.sqlite3"))
-        self.bot_token = bot_token if bot_token is not None else os.getenv("BOT_TOKEN", "")
+                 webapp_url: str | None = None, webhook_secret: str | None = None,
+                 config: RuntimeConfig | None = None):
+        settings = config or RuntimeConfig.from_environment()
+        self.db_path = db_path or settings.db_path
+        self.bot_token = bot_token if bot_token is not None else settings.bot_token
         self.dev_mode = dev_mode if dev_mode is not None else os.getenv("APP_DEV_MODE") == "1"
-        self.webapp_url = webapp_url if webapp_url is not None else os.getenv("WEBAPP_URL", "")
-        self.webhook_secret = webhook_secret if webhook_secret is not None else os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+        self.webapp_url = webapp_url if webapp_url is not None else settings.webapp_url
+        self.webhook_secret = webhook_secret if webhook_secret is not None else settings.webhook_secret
+        if config is None and bot_token is not None and webhook_secret is None and not os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip():
+            self.webhook_secret = automatic_webhook_secret(self.bot_token)
+        self.register_webhook = settings.register_webhook
+        self.telegram_registered = False
+        self.stop_event = threading.Event()
         self._init_db()
         super().__init__(address, GameHandler)
+
+    def server_close(self):
+        self.stop_event.set()
+        super().server_close()
 
     @contextmanager
     def db(self):
@@ -647,7 +721,8 @@ class GameHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/health":
-            self.reply(200, {"status": "ok", "telegram_configured": bool(self.server.bot_token)})
+            self.reply(200, {"status": "ok", "telegram_configured": bool(self.server.bot_token),
+                             "telegram_ready": getattr(self.server, "telegram_registered", False)})
         elif path == "/api/me":
             telegram = self.auth()
             if telegram is None:
@@ -1016,29 +1091,60 @@ def telegram_api(method: str, payload: dict[str, Any], token: str) -> dict[str, 
     return result
 
 
-def register_webhook():
-    url = os.getenv("WEBAPP_URL", "").rstrip("/")
-    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
-    token = os.getenv("BOT_TOKEN", "")
+def register_webhook(settings: RuntimeConfig | GameServer | None = None):
+    settings = settings or RuntimeConfig.from_environment()
+    url, secret, token = settings.webapp_url.rstrip("/"), settings.webhook_secret, settings.bot_token
     if not url.startswith("https://") or not secret or not token:
-        raise ValueError("Set BOT_TOKEN, WEBAPP_URL (https://...), and TELEGRAM_WEBHOOK_SECRET")
+        raise ValueError("Bothost must provide the bot token and domain; connect a Telegram bot and enable its domain")
     telegram_api("setWebhook", {"url": url + "/telegram/webhook", "secret_token": secret,
                                 "allowed_updates": ["message", "callback_query"]}, token)
     telegram_api("setChatMenuButton", {"menu_button": {"type": "web_app", "text": "Играть", "web_app": {"url": url}}}, token)
 
 
-def register_webhook_in_background():
-    try:
-        register_webhook()
-        print("Telegram webhook and menu button registered", flush=True)
-    except (OSError, ValueError):
-        print("Telegram setup failed; check BOT_TOKEN, WEBAPP_URL and TELEGRAM_WEBHOOK_SECRET", flush=True)
+def register_webhook_in_background(server: GameServer):
+    if not server.bot_token or not server.webapp_url:
+        print("Telegram setup: connect the bot in Bothost and enable 'Use domain'; hosting supplies the settings automatically", flush=True)
+        return
+    delay = 2
+    while not server.stop_event.is_set():
+        retry_delay = delay
+        try:
+            register_webhook(server)
+            server.telegram_registered = True
+            print("Telegram webhook and menu button registered", flush=True)
+            return
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                print("Telegram rejected the bot credentials; check the bot token entered in Bothost", flush=True)
+                return
+            if error.code == 429:
+                try:
+                    retry_after = json.loads(error.read()).get("parameters", {}).get("retry_after", 0)
+                    if type(retry_after) is int and retry_after > 0:
+                        retry_delay = max(delay, retry_after)
+                except (OSError, ValueError, TypeError, AttributeError):
+                    pass
+        except (OSError, ValueError):
+            pass
+        print(f"Telegram setup unavailable; retrying automatically in {retry_delay}s", flush=True)
+        if server.stop_event.wait(retry_delay):
+            return
+        delay = min(delay * 2, 60)
+
+
+def start_telegram_setup(server: GameServer):
+    if not server.register_webhook:
+        return None
+    worker = threading.Thread(target=register_webhook_in_background, args=(server,), daemon=True)
+    worker.start()
+    return worker
 
 
 if __name__ == "__main__":
+    settings = RuntimeConfig.from_environment()
     if len(sys.argv) > 1 and sys.argv[1] in ("wallet-list", "wallet-complete", "wallet-cancel"):
         storage = object.__new__(GameServer)
-        storage.db_path = os.getenv("DATABASE_PATH", str(BASE_DIR / "data" / "pickaxe.sqlite3"))
+        storage.db_path = settings.db_path
         storage._init_db()
         if sys.argv[1] == "wallet-list":
             with storage.db() as conn:
@@ -1053,15 +1159,14 @@ if __name__ == "__main__":
                 sys.exit(str(error))
     elif len(sys.argv) > 1 and sys.argv[1] == "set-webhook":
         try:
-            register_webhook()
+            register_webhook(settings)
         except (OSError, ValueError):
-            sys.exit("Check BOT_TOKEN, WEBAPP_URL and TELEGRAM_WEBHOOK_SECRET")
+            sys.exit("Telegram setup failed; check the bot token and domain in Bothost")
         print("Webhook registered")
     else:
-        server = GameServer(("0.0.0.0", int(os.getenv("PORT", "3000"))))
+        server = GameServer(("0.0.0.0", settings.port), config=settings)
         print(f"Pickaxe Drop listening on port {server.server_port}", flush=True)
-        if os.getenv("REGISTER_WEBHOOK") == "1":
-            threading.Thread(target=register_webhook_in_background, daemon=True).start()
+        start_telegram_setup(server)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
