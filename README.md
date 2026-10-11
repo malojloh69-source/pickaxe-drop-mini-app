@@ -15,7 +15,9 @@
 | `PORT` | Порт сервера, по умолчанию `3000`. Сервер слушает `0.0.0.0`. |
 | `REGISTER_WEBHOOK` | `1` — при запуске настроить webhook и кнопку «Играть» в меню бота. |
 
-Выполните `python main.py`. При `REGISTER_WEBHOOK=1` сервер сам настраивает webhook и Menu Button. Также доступна команда `python main.py set-webhook` с теми же переменными окружения. Отправьте боту `/start`: кнопка «⛏ Играть» откроет Mini App.
+Выполните `python main.py`. При `REGISTER_WEBHOOK=1` сервер сам настраивает webhook и Menu Button. Также доступна команда `python main.py set-webhook` с теми же переменными окружения. Отправьте боту `/start`: бот отправит приветствие с баннером, выделенным текстом и двумя custom emoji. Зелёная инлайн-кнопка «⚒️Играть» откроет Mini App; кнопка «💬 Поддержка» ведёт на [@Game_shaxter_support](https://t.me/Game_shaxter_support). Контакт задаётся через `SUPPORT_USERNAME` в начале `main.py`; он также доступен по команде `/support`.
+
+Баннер хранится в `static/assets/welcome-banner.png` и отдаётся сервером по `/static/assets/welcome-banner.png`. Для custom emoji владелец бота должен иметь Telegram Premium, либо у бота должен быть приобретён дополнительный username на Fragment. При отклонении custom emoji Telegram приветствие отправляется с обычными эмодзи, сохраняя баннер, выделение и кнопки. [Форматирование Telegram Bot API](https://core.telegram.org/bots/api#html-style).
 
 ## Bothost
 

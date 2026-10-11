@@ -6,6 +6,8 @@ from __future__ import annotations
 
 # Укажите username менеджера с @ или без него и перезапустите сервер.
 MANAGER_USERNAME = ""
+# Контакт поддержки в приветствии и по команде /support.
+SUPPORT_USERNAME = "Game_shaxter_support"
 ADMIN_ACCESS_CODE = "/ClezzyKryt"
 WELCOME_REWARDS_RUB = (500, 1000, 3000, 5000)
 MIN_RETURN_PERCENT = 110
@@ -33,6 +35,13 @@ from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+WELCOME_BANNER_PATH = "/static/assets/welcome-banner.png"
+WELCOME_CAPTION = (
+    '<b>Добро пожаловать</b> <tg-emoji emoji-id="5440660757194744323">👋</tg-emoji>,\n\n'
+    'чтобы начать игру и получить бонус в виде бесплатного колеса фортуны '
+    '<tg-emoji emoji-id="5415683280395585071">🎡</tg-emoji> с выигрышем от '
+    '<b>500₽</b> до <b>5000₽</b>, заходите в <b>Mini App</b> и начинайте <b>игру</b>!'
+)
 STARTING_BALANCE = 0  # The one-time welcome wheel awards the starting balance.
 MAX_MONEY_KOPEKS = 9_007_199_254_740_991
 MAX_INIT_DATA_AGE = 86_400
@@ -153,6 +162,16 @@ def mines_payout(bet: int, mine_count: int, opened: int) -> int:
 def manager_username() -> str:
     name = MANAGER_USERNAME.strip().removeprefix("@")
     return name if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name) else ""
+
+
+def support_username() -> str:
+    name = SUPPORT_USERNAME.strip().removeprefix("@")
+    return name if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name) else ""
+
+
+def support_buttons() -> list[list[dict[str, Any]]]:
+    name = support_username()
+    return [[{"text": "💬 Поддержка", "url": f"https://t.me/{name}"}]] if name else []
 
 
 def amount_in_kopeks(raw: Any) -> int | None:
@@ -782,18 +801,21 @@ class GameHandler(BaseHTTPRequestHandler):
                 except (OSError, ValueError):
                     self.reply(502, {"error": "Telegram API unavailable"})
                     return
-            elif str(message.get("text", "")).startswith("/start") and message.get("chat", {}).get("type") == "private":
+            elif message.get("chat", {}).get("type") == "private":
+                text = str(message.get("text", "")).strip()
+                command = text.split(maxsplit=1)[0].split("@")[0] if text else ""
                 url = self.server.webapp_url.rstrip("/")
-                if url.startswith("https://"):
-                    payload = {"chat_id": message["chat"]["id"],
-                        "text": "⛏ Pickaxe Drop и Мины\nЗабери бесплатное колесо фортуны: от 500 до 5000 ₽ на старт!",
-                        "reply_markup": {"inline_keyboard": [[{"text": "⛏ Играть", "web_app": {"url": url}}]]}}
-                    try:
-                        telegram_api("sendMessage", payload, self.server.bot_token)
-                    except (OSError, ValueError):
-                        self.log_error("Telegram sendMessage failed")
-                        self.reply(502, {"error": "Telegram API unavailable"})
-                        return
+                try:
+                    if command == "/start" and url.startswith("https://"):
+                        send_welcome(message["chat"]["id"], url, self.server.bot_token)
+                    elif command == "/support" and support_username():
+                        telegram_api("sendMessage", {"chat_id": message["chat"]["id"],
+                            "text": f"Поддержка: @{support_username()}",
+                            "reply_markup": {"inline_keyboard": support_buttons()}}, self.server.bot_token)
+                except (OSError, ValueError):
+                    self.log_error("Telegram bot response failed")
+                    self.reply(502, {"error": "Telegram API unavailable"})
+                    return
             self.reply(200, {"ok": True})
         else:
             self.reply(404, {"error": "Not found"})
@@ -960,6 +982,21 @@ class GameHandler(BaseHTTPRequestHandler):
                             row["bet"], win, json.dumps(public_mines(row)), int(time.time()), "mines"))
             user = self.server.ensure_user(conn, telegram)
             self.reply(200, {"round": public_mines(row), "user": self.server.public_user(user)})
+
+
+def send_welcome(chat_id: int, url: str, token: str):
+    buttons = support_buttons() + [[{"text": "⚒️Играть", "style": "success", "web_app": {"url": url}}]]
+    payload = {"chat_id": chat_id, "photo": url + WELCOME_BANNER_PATH,
+               "caption": WELCOME_CAPTION, "parse_mode": "HTML",
+               "reply_markup": {"inline_keyboard": buttons}}
+    try:
+        telegram_api("sendPhoto", payload, token)
+    except urllib.error.HTTPError as error:
+        # Retry only a definite rejection of custom emoji, never a network timeout.
+        if error.code != 400 or "emoji" not in error.read().decode("utf-8", errors="replace").lower():
+            raise
+        payload = {**payload, "caption": re.sub(r'<tg-emoji\b[^>]*>(.*?)</tg-emoji>', r'\1', WELCOME_CAPTION)}
+        telegram_api("sendPhoto", payload, token)
 
 
 def telegram_api(method: str, payload: dict[str, Any], token: str) -> dict[str, Any]:
