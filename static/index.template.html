@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="Pickaxe Drop и Мины — пиксельные игры в Telegram">
+  <title>Pickaxe Drop · Мины</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/physics.js" defer></script>
+  <script src="/static/sound.js" defer></script>
+  <script src="/static/bet.js" defer></script>
+  <script src="/static/mines.js" defer></script>
+  <script src="/static/account.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-pick" viewBox="0 0 24 24"><path d="m4 21 12-12M3 6c6-5 13-3 17 5l-3 3C14 7 9 4 3 6Z"/></symbol>
+    <symbol id="i-game" viewBox="0 0 24 24"><path d="M7 7h10c3 0 5 9 4 11-1 2-4 1-6-2H9c-2 3-5 4-6 2C2 16 4 7 7 7Z"/><path d="M7 10v5m-2.5-2.5h5M16 11h.01M18.5 14h.01"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 19 19 5M5 5h14v14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+    <symbol id="i-spin" viewBox="0 0 24 24"><path d="M4 9a8.5 8.5 0 1 1 .5 7M4 3v6h6"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M5 8a8 8 0 1 1-1 7M5 3v5h5"/><path d="m10 8 6 4-6 4Z"/></symbol>
+    <symbol id="i-fast" viewBox="0 0 24 24"><path d="m4 5 7 7-7 7m9-14 7 7-7 7"/></symbol>
+    <symbol id="i-diamond" viewBox="0 0 24 24"><path d="m12 3 9 9-9 9-9-9Z"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 21 3.5 12.5C-2 6 7-1 12 6c5-7 14 0 8.5 6.5Z"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 8.5a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4M12 16h.01"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></symbol>
+  </svg>
+  <div id="app" class="app">
+    <section id="home-view" class="view home-view">
+      <div class="home-inner">
+        <div class="account-bar">
+        <button class="account-profile" id="account-bar" type="button" aria-label="Открыть профиль Telegram">
+          <span class="avatar" id="home-avatar">И</span>
+          <span class="account-name"><strong id="home-name">Игрок</strong><span class="account-progress" aria-label="Игровой уровень"><b id="level-current">1</b><span class="level-track"><i id="level-fill"></i></span><b id="level-next">2</b></span></span>
+        </button>
+          <span class="account-balance"><strong id="home-balance">0 ₽</strong></span>
+          <button type="button" class="account-arrow" data-wallet="deposit" aria-label="Пополнить баланс"><svg><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="promo-carousel" id="promo-carousel" role="region" aria-label="Баннеры игр" aria-roledescription="карусель" tabindex="0">
+        <button type="button" class="promo-banner" data-view="game" aria-label="Баннер 1 из 2: играть в Pickaxe Drop">
+          <img class="promo-art" src="/static/assets/pickaxe-hero.png" alt="" fetchpriority="high">
+          <span class="promo-shade"></span>
+          <span class="promo-title">PICKAXE<strong>DROP</strong><small>ТВОЯ ЗОЛОТАЯ ЖИЛА</small></span>
+          <span class="promo-gift"><b>ДО 5 000 ₽</b><small>БЕСПЛАТНОЕ КОЛЕСО</small></span>
+          <span class="promo-caption">ОДНА ШАХТА. ТЫСЯЧИ НАХОДОК.</span>
+        </button>
+        <button type="button" class="promo-banner mines-promo" data-view="mines" aria-label="Баннер 2 из 2: играть в Мины">
+          <img src="/static/assets/mines-banner.png" alt="Мины — открывай клетки и забирай награды. 500 игровых ₽ на первый вход." loading="eager">
+        </button>
+        </div>
+        <div class="carousel-dots" aria-label="Выбрать баннер"><button type="button" data-slide="0" aria-label="Баннер Pickaxe Drop" aria-pressed="true" class="selected"></button><button type="button" data-slide="1" aria-label="Баннер Мины" aria-pressed="false"></button></div>
+        <div class="games-grid" aria-label="Игры">
+          <button id="start-game" class="game-card" type="button" aria-label="Открыть игру Pickaxe Drop">
+            <img class="card-art" src="/static/assets/pickaxe-hero.png" alt="Пиксельная алмазная кирка и изумрудная руда">
+            <span class="card-shade"></span>
+            <span class="card-caption"><strong>PICKAXE DROP</strong><small>Твоя золотая жила</small></span>
+          </button>
+          <button class="game-card" type="button" data-view="mines" aria-label="Открыть игру Мины">
+            <img class="card-art" src="/static/assets/mines-card.png" alt="Изумруды и пиксельные мины">
+            <span class="card-shade"></span>
+            <span class="card-caption"><strong>МИНЫ</strong><small>Найди свои изумруды</small></span>
+          </button>
+        </div>
+        <button type="button" class="rules-link" data-help><svg><use href="#i-info"/></svg>Как играть</button>
+        <button type="button" id="welcome-open" class="welcome-link hidden"><svg><use href="#i-spark"/></svg>Забрать бесплатное колесо</button>
+      </div>
+      <nav class="bottom-nav" aria-label="Навигация">
+        <button type="button" data-view="home" class="nav-item active"><svg><use href="#i-game"/></svg><span>Игра</span></button>
+        <button type="button" data-view="profile" class="nav-item"><svg><use href="#i-user"/></svg><span>Профиль</span></button>
+      </nav>
+    </section>
+    <section id="profile-view" class="view profile-view hidden">
+      <div class="page-head"><button type="button" class="back-link" data-view="home"><svg><use href="#i-back"/></svg><span>Назад</span></button><strong>Профиль</strong></div>
+      <div class="profile-body">
+        <div class="profile-hero"><span class="avatar large" id="profile-avatar">И</span><h2 id="profile-name">Игрок</h2><p id="profile-username">Telegram</p></div>
+        <div class="balance-tile"><span>БАЛАНС</span><strong id="profile-balance">0 ₽</strong><small id="profile-gift">Бесплатное колесо — до 5 000 ₽ на старт</small></div>
+        <div class="profile-wallet-actions"><button type="button" data-wallet="deposit"><svg><use href="#i-plus"/></svg>Пополнение</button><button type="button" data-wallet="withdraw"><svg><use href="#i-arrow"/></svg>Вывод</button></div>
+        <div class="list-head"><strong>История игры</strong><span>Последние 20 раундов</span></div>
+        <div id="history-list" class="history-list"><p class="empty-history">Сыграй первый раунд, и он появится здесь.</p></div>
+      </div>
+      <nav class="bottom-nav" aria-label="Навигация">
+        <button type="button" data-view="home" class="nav-item"><svg><use href="#i-game"/></svg><span>Игра</span></button>
+        <button type="button" data-view="profile" class="nav-item active"><svg><use href="#i-user"/></svg><span>Профиль</span></button>
+      </nav>
+    </section>
+    <section id="game-view" class="view game-view hidden">
+      <div class="game-topbar"><button id="game-back" class="game-back" type="button"><svg><use href="#i-back"/></svg><span>Назад</span></button><span>Pickaxe Drop</span><button id="sound-button" class="sound-button" type="button" aria-label="Выключить звук" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4Z"/><path class="sound-waves" d="M16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/><path class="sound-off" d="m17 9 5 6m0-6-5 6"/></svg></button></div>
+      <div class="mine-scene">
+        <canvas id="game-world" width="240" height="440" aria-label="Пиксельная шахта и падающая кирка"></canvas>
+        <canvas id="game-mark" class="game-logo" width="96" height="40" aria-label="Pickaxe Drop"></canvas>
+        <button id="game-user" class="game-user" type="button" aria-label="Открыть профиль"><span class="avatar tiny" id="game-avatar">И</span><span id="game-name">Игрок</span></button>
+        <div id="game-health" class="sr-only" aria-live="off">Прочность <strong id="health-value">Выбираем кирку</strong></div>
+        <div id="active-pick" class="active-pick hidden"><canvas id="active-pick-icon" width="32" height="32" aria-hidden="true"></canvas><span id="active-pick-name"></span></div>
+        <div id="game-toast" class="game-toast hidden" role="status"></div>
+        <div id="drop-caption" class="drop-caption hidden" role="status">ВЫБИРАЕМ КИРКУ…</div>
+        <div id="idle-caption" class="idle-caption"><strong>Твоя золотая жила</strong><span>Запусти кирку. Собирай находки.</span></div>
+        <div id="result-panel" class="result-panel hidden"><span>ДОБЫЧА ЗА РАУНД</span><strong id="result-win">0 ₽</strong><small id="result-depth">Глубина: 0 блоков</small></div>
+        <div id="game-controls" class="game-controls">
+          <div class="control-row">
+            <button id="speed-button" class="round-control speed-control" type="button" aria-label="Ускорить анимацию" aria-pressed="false"><svg><use href="#i-fast"/></svg></button>
+            <button id="spin-button" class="spin-button" type="button" aria-label="Запустить кирку"><svg><use href="#i-spin"/></svg></button>
+            <button id="repeat-button" class="round-control" type="button" aria-label="Повторить раунд"><svg><use href="#i-repeat"/></svg></button>
+          </div>
+          <div class="game-wallet">
+          <div class="bet-row">
+            <div class="bet-item"><small>БАЛАНС (₽)</small><strong id="game-balance">0</strong></div>
+            <div class="bet-item right"><small>ВЫИГРЫШ (₽)</small><strong id="game-win">0</strong></div>
+          </div>
+          <div class="stake-row"><small>СТАВКА (₽)</small><div class="bet-selector"><button id="bet-minus" type="button" aria-label="Уменьшить ставку">−</button><input id="bet-value" class="bet-input" type="text" inputmode="decimal" value="10" aria-label="Сумма ставки в рублях" autocomplete="off"><button id="bet-plus" type="button" aria-label="Увеличить ставку">+</button><button id="bet-max" type="button" class="bet-max" aria-label="Поставить весь баланс">MAX</button></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section id="mines-view" class="view mines-view hidden">
+      <div class="game-topbar"><button type="button" class="game-back" data-view="home"><svg><use href="#i-back"/></svg><span>Назад</span></button><span>Мины</span><button id="mines-sound" class="sound-button" type="button" aria-label="Выключить звук" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4Z"/><path class="sound-waves" d="M16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/><path class="sound-off" d="m17 9 5 6m0-6-5 6"/></svg></button></div>
+      <div class="mines-body">
+        <div class="mines-heading"><div><span>ПИКСЕЛЬНАЯ ШАХТА</span><h1>МИНЫ</h1></div><span class="mines-counter"><svg><use href="#i-diamond"/></svg><b id="mines-found">0 / 22</b></span></div>
+        <p id="mines-status" class="mines-status" role="status">Открывай изумруды. Мина тоже даёт бонус.</p>
+        <div id="mines-board" class="mines-board" role="group" aria-label="Поле 5 на 5"></div>
+        <div class="mines-reward"><div><small>МОЖНО ЗАБРАТЬ</small><strong id="mines-payout">0 ₽</strong></div><div><small>СЛЕДУЮЩАЯ КЛЕТКА</small><strong id="mines-next">×1,09</strong></div></div>
+        <div class="mines-settings"><span>Количество мин</span><div class="mine-counts" aria-label="Количество мин"><button type="button" data-mine-count="3" aria-pressed="true" class="selected">3</button><button type="button" data-mine-count="5" aria-pressed="false">5</button><button type="button" data-mine-count="7" aria-pressed="false">7</button></div></div>
+        <div class="stake-row mines-stake"><small>СТАВКА (₽)</small><div class="bet-selector"><button id="mines-bet-minus" type="button" aria-label="Уменьшить ставку">−</button><input id="mines-bet" class="bet-input" type="text" inputmode="decimal" value="10" aria-label="Сумма ставки в рублях" autocomplete="off"><button id="mines-bet-plus" type="button" aria-label="Увеличить ставку">+</button><button id="mines-bet-max" type="button" class="bet-max" aria-label="Поставить весь баланс">MAX</button></div></div>
+        <button id="mines-action" class="primary-button mines-action" type="button">Начать игру · 10 ₽ <svg><use href="#i-arrow"/></svg></button>
+        <div class="mines-balance"><span>БАЛАНС</span><strong id="mines-balance">0 ₽</strong></div>
+        <p class="mines-note">Открывай изумруды и забирай добычу.</p>
+      </div>
+    </section>
+    <div id="wallet-modal" class="sheet-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="wallet-title">
+      <div class="wallet-sheet"><span class="sheet-grip" aria-hidden="true"></span><button id="wallet-close" type="button" class="sheet-close" aria-label="Закрыть">×</button>
+        <div id="wallet-form-step"><span class="sheet-kicker">БАЛАНС В ₽</span><h2 id="wallet-title">Пополнение</h2><p id="wallet-description">Укажи сумму пополнения</p>
+          <form id="wallet-form"><label class="amount-label" for="wallet-amount">Сумма</label><div class="amount-field"><input id="wallet-amount" type="text" inputmode="decimal" placeholder="0" autocomplete="off" maxlength="11" aria-describedby="wallet-error"><span>₽</span></div><p id="wallet-error" class="sheet-error" role="status"></p><button id="wallet-submit" class="primary-button" type="submit">Пополнить</button></form>
+        </div>
+        <div id="wallet-contact-step" class="hidden"><span class="sheet-kicker">ЗАЯВКА ПРИНЯТА</span><h2 id="wallet-contact-title">Пополнение через менеджера</h2><p id="wallet-contact-description">Напиши менеджеру, чтобы согласовать пополнение.</p><strong id="wallet-contact-amount" class="contact-amount">0 ₽</strong><span id="wallet-request-number" class="contact-number"></span><button id="wallet-manager" type="button" class="manager-link">@manager</button><p id="wallet-contact-note" class="contact-note"></p><button id="wallet-copy" type="button" class="copy-request">Скопировать заявку</button><p id="wallet-copy-text" class="copy-text hidden"></p><button id="wallet-done" type="button" class="primary-button">Понятно</button></div>
+      </div>
+    </div>
+    <div id="welcome-modal" class="welcome-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+      <div class="welcome-panel"><button id="welcome-close" type="button" class="sheet-close" aria-label="Закрыть">×</button><span class="welcome-kicker">БЕСПЛАТНО</span><h2 id="welcome-title">Колесо фортуны</h2><p id="welcome-description">От 500 до 5 000 ₽ на старт.<br>Твоя награда уже ждёт.</p><div class="welcome-wheel-wrap"><span class="wheel-pointer" aria-hidden="true"></span><canvas id="welcome-wheel" width="512" height="512" aria-label="Колесо: 500, 1000, 3000 и 5000 рублей"></canvas><span class="wheel-center"><svg><use href="#i-spark"/></svg></span></div><strong id="welcome-prize" class="welcome-prize hidden"></strong><p id="welcome-error" class="sheet-error" role="status"></p><button id="welcome-action" type="button" class="primary-button">Забрать бесплатно</button><small class="welcome-footnote">Одно колесо на аккаунт</small></div>
+    </div>
+    <div id="help-modal" class="help-modal hidden" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div class="help-panel"><button id="help-close" type="button" class="help-close" aria-label="Закрыть правила">×</button><span class="help-kicker">PICKAXE DROP</span><h2 id="help-title">Твоя золотая жила</h2><p>Выбери ставку и запусти раунд. Случайная кирка падает, вращается и разбивает блоки.</p><div class="help-rule"><svg><use href="#i-pick"/></svg><span><strong>Три вида кирок</strong><small>Каменная — 100 HP (50%), железная — 150 HP (35%), алмазная — 250 HP (15%). Кирка выпадает один раз за раунд.</small></span></div><div class="help-rule"><svg><use href="#i-diamond"/></svg><span><strong>Собирай руду</strong><small>Находки увеличивают выигрыш. Собирай медь, золото, изумруды и алмазы.</small></span></div><div class="help-rule"><svg><use href="#i-heart"/></svg><span><strong>Береги кирку</strong><small>Камень и TNT уменьшают прочность; сердца восстанавливают её до максимума выпавшей кирки.</small></span></div><button id="help-play" class="primary-button" type="button">Понятно, играть <svg><use href="#i-arrow"/></svg></button></div>
+    </div>
+    <div id="fatal-error" class="fatal-error hidden" role="alert"><div><span class="brand-symbol"><svg><use href="#i-pick"/></svg></span><h2>Не удалось войти</h2><p id="fatal-message">Открой игру через Telegram.</p><button id="retry-button" type="button">Повторить</button></div></div>
+  </div>
+</body>
+</html>

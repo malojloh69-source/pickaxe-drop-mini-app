@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+WORKDIR /app
+ENV PORT=3000 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DATABASE_PATH=/data/pickaxe.sqlite3
+COPY . /app
+EXPOSE 3000
+CMD ["python", "main.py"]

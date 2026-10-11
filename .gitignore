@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+data/
+.env
+.DS_Store
+upload/
+generated_images/
+qa-mobile.html
+*.zip
+static/assets/fonts/*.new

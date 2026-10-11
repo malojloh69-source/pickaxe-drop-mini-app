@@ -1,0 +1,10 @@
+.git
+.env
+data
+__pycache__
+**/__pycache__
+*.pyc
+*.zip
+upload
+generated_images
+qa-mobile.html
