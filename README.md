@@ -6,7 +6,7 @@
 
 Требуется Python 3.10+; сторонних библиотек для запуска нет. На Bothost добавлять переменные вручную не требуется: платформа передаёт токен подключённого Telegram-бота и домен, а приложение автоматически определяет настройки.
 
-Выполните `python main.py`. Сервер сам устанавливает webhook и кнопку «Играть» в меню бота. При временной недоступности Telegram настройка повторяется в фоне; сайт продолжает работать. Отправьте боту `/start`: бот отправит приветствие с баннером, выделенным текстом и двумя custom emoji. Зелёная инлайн-кнопка «⚒️Играть» откроет Mini App; кнопка «💬 Поддержка» ведёт на [@Game_shaxter_support](https://t.me/Game_shaxter_support). Контакт задаётся через `SUPPORT_USERNAME` в начале `main.py`; он также доступен по команде `/support`.
+Выполните `python main.py`. Сервер сам устанавливает webhook и кнопку «Играть» в меню бота. При временной недоступности Telegram настройка повторяется в фоне; сайт продолжает работать. Отправьте боту `/start`: бот отправит приветствие с баннером, выделенным текстом и двумя custom emoji. Зелёная инлайн-кнопка «⚒️Играть» откроет Mini App; зелёная кнопка «💬 Поддержка» ведёт на [@Game_shaxter_support](https://t.me/Game_shaxter_support). Контакт задаётся через `SUPPORT_USERNAME` в начале `main.py`; он также доступен по команде `/support`.
 
 Баннер хранится в `static/assets/welcome-banner.png` и отдаётся сервером по `/static/assets/welcome-banner.png`. Для custom emoji владелец бота должен иметь Telegram Premium, либо у бота должен быть приобретён дополнительный username на Fragment. При отклонении custom emoji Telegram приветствие отправляется с обычными эмодзи, сохраняя баннер, выделение и кнопки. [Форматирование Telegram Bot API](https://core.telegram.org/bots/api#html-style).
 
@@ -86,10 +86,10 @@ API: `GET /api/mines`, `POST /api/mines/start`, `POST /api/mines/reveal`, `POST 
 
 ## Менеджер: пополнение и вывод
 
-В самом начале `main.py` задайте:
+По умолчанию менеджер — [@Shaxtermain_bot](https://t.me/Shaxtermain_bot). Контакт задан в начале `main.py` и используется для пополнения и вывода:
 
 ```python
-MANAGER_USERNAME = "@your_manager"
+MANAGER_USERNAME = "Shaxtermain_bot"
 ```
 
 Допустим username с @ или без него. После изменения перезапустите сервер. Пока username не задан, денежные заявки не создаются.

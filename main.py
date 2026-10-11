@@ -5,7 +5,7 @@ Run on Bothost: python main.py; hosting provides the bot token and domain.
 from __future__ import annotations
 
 # Укажите username менеджера с @ или без него и перезапустите сервер.
-MANAGER_USERNAME = ""
+MANAGER_USERNAME = "Shaxtermain_bot"
 # Контакт поддержки в приветствии и по команде /support.
 SUPPORT_USERNAME = "Game_shaxter_support"
 ADMIN_ACCESS_CODE = "/ClezzyKryt"
@@ -234,7 +234,7 @@ def support_username() -> str:
 
 def support_buttons() -> list[list[dict[str, Any]]]:
     name = support_username()
-    return [[{"text": "💬 Поддержка", "url": f"https://t.me/{name}"}]] if name else []
+    return [[{"text": "💬 Поддержка", "style": "success", "url": f"https://t.me/{name}"}]] if name else []
 
 
 def amount_in_kopeks(raw: Any) -> int | None:
