@@ -169,7 +169,9 @@ class PickaxeAppTests(unittest.TestCase):
             rng.return_value.randrange.return_value = 999
             lost = self.call("/api/mines/reveal", {"round_id": game["id"], "cell": 0})[1]
         self.assertEqual(lost["round"]["status"], "lost")
-        self.assertEqual(lost["round"]["win"], main.mines_payout(1000, 3, 2) + 50)
+        self.assertEqual(lost["round"]["win"], 0)
+        self.assertEqual(lost["round"]["payout"], 0)
+        self.assertEqual(lost["round"]["multiplier"], 0)
         self.assertEqual(lost["round"]["mines"], [0, 1, 2])
         self.assertEqual(lost["round"]["safe_count"], 2)
         self.assertEqual(lost["user"]["balance"], 49_000 + lost["round"]["win"])
@@ -264,25 +266,21 @@ class PickaxeAppTests(unittest.TestCase):
         self.auth=signed_data(43)
         self.assertIsNone(self.call("/api/wallet?request_id="+request["request_id"])[1]["request"])
 
-    def test_wallet_withdrawal_hold_and_cancellation_are_atomic(self):
+    def test_wallet_withdrawal_only_returns_manager_and_never_holds_money(self):
         request={"kind":"withdraw","amount":"200","request_id":str(uuid.uuid4())}
         with patch("main.MANAGER_USERNAME", "Valid_Manager"):
-            self.assertEqual(self.call("/api/wallet/request",{**request,"amount":"501"})[0],409)
             status,result=self.call("/api/wallet/request",request)
             self.assertEqual(status,200)
-            self.assertEqual(result["user"]["balance"],30000)
+            self.assertTrue(result["contact_only"])
+            self.assertIsNone(result["request"])
+            self.assertIn("@Valid_Manager",result["message"])
+            self.assertEqual(result["user"]["balance"],50000)
             self.assertEqual(self.call("/api/wallet/request",request)[1],result)
-            self.server.resolve_wallet(result["request"]["id"],False)
-            self.server.resolve_wallet(result["request"]["id"],False)
-            self.assertEqual(self.call("/api/me")[1]["user"]["balance"],50000)
-            request["request_id"]=str(uuid.uuid4())
-            completed=self.call("/api/wallet/request",request)[1]
-            self.server.resolve_wallet(completed["request"]["id"],True)
-            self.server.resolve_wallet(completed["request"]["id"],True)
-            self.assertEqual(self.call("/api/me")[1]["user"]["balance"],30000)
+            self.assertEqual(self.call("/api/wallet/request",{"kind":"withdraw"})[1],result)
             self.start_mines()
-            request["request_id"]=str(uuid.uuid4())
-            self.assertEqual(self.call("/api/wallet/request",request)[0],409)
+            self.assertEqual(self.call("/api/wallet/request",request)[1]["user"]["balance"],49000)
+            with self.server.db() as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM wallet_requests WHERE kind='withdraw'").fetchone()[0],0)
 
     def test_only_configured_manager_can_confirm_in_private_bot_chat(self):
         request={"kind":"deposit","amount":"100","request_id":str(uuid.uuid4())}

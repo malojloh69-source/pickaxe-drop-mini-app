@@ -62,20 +62,18 @@ test('deposit opens the amount sheet then the configured manager sheet without c
   ui.$('wallet-manager').click();assert.equal(ui.opened[0],'https://t.me/Valid_Manager');
 });
 
-test('withdrawal rejects an amount above balance and recovers a lost reservation response',async()=>{
+test('withdrawal immediately opens manager contact without a request or balance change',async()=>{
   let requests=0;
-  const ui=harness(async(url)=>{
-    requests++;
-    if(url.includes('/request'))throw new TypeError('lost response');
-    return {request:{id:'withdraw-1',kind:'withdraw',amount:20000},manager_username:'Valid_Manager',
-      user:{balance:30000,welcome_prize:50000,welcome_available:false}};
-  },{balance:50000,welcome_prize:50000,welcome_available:false});
-  ui.configure();ui.buttons[1].click();ui.$('wallet-amount').value='501';await ui.$('wallet-form').emit('submit');
-  assert.equal(requests,0);assert.match(ui.$('wallet-error').textContent,/превышает/);
-  ui.$('wallet-amount').value='200';await ui.$('wallet-form').emit('submit');
-  assert.equal(requests,2);assert.equal(ui.user.balance,30000);
+  const ui=harness(async()=>{requests++;throw new Error('withdrawal must not call API')},
+    {balance:50000,welcome_prize:50000,welcome_available:false});
+  ui.configure();ui.buttons[1].click();await ui.$('wallet-form').emit('submit');
+  assert.equal(requests,0);assert.equal(ui.user.balance,50000);
   assert.equal(ui.$('wallet-contact-title').textContent,'Вывод через менеджера');
-  assert.equal(ui.$('wallet-contact-note').textContent,'Сумма зарезервирована до решения менеджера.');
+  assert.equal(ui.$('wallet-contact-description').textContent,'Чтобы вывести деньги, напиши менеджеру @Valid_Manager.');
+  assert.ok(ui.$('wallet-form-step').classList.contains('hidden'));
+  assert.ok(ui.$('wallet-contact-amount').classList.contains('hidden'));
+  assert.ok(ui.$('wallet-copy').classList.contains('hidden'));
+  ui.$('wallet-manager').click();assert.equal(ui.opened[0],'https://t.me/Valid_Manager');
 });
 
 test('missing manager configuration never creates a wallet request',async()=>{

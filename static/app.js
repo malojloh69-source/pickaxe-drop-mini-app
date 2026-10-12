@@ -167,6 +167,9 @@
     const pickaxe = pickaxes.find(p => (draw -= p.chance) < 0) || pickaxes[0];
     const max_hp = pickaxe.max_hp;
     let health = max_hp, position = 5, multiplier = 1, win = 0;
+    const cost=Math.round(bet*100), maxWin=Math.min(cost*2,Number.MAX_SAFE_INTEGER-state.balance+cost);
+    const reservedBonus=Math.max(1,Math.floor(cost*5/100)),oreLimit=maxWin-reservedBonus;
+    if(Math.floor(cost*110/100)>maxWin)throw new Error('Сумма слишком велика для баланса');
     const kinds = ['stone','copper','gold','emerald','diamond','tnt','heart','boost'];
     const weights = [28,20,16,9,4,8,8,7];
     const rewards = {copper:.015,gold:.04,emerald:.08,diamond:.25};
@@ -179,18 +182,18 @@
       if(kind==='tnt')health=Math.max(0,health-(16+Math.random()*9|0));
       else if(kind==='heart')health=Math.min(max_hp,health+(9+Math.random()*7|0));
       else health=Math.max(0,health-(2+Math.random()*4|0));
-      if(rewards[kind]) {gain=Math.round(bet*100*rewards[kind]*multiplier);win+=gain}
-      if(kind==='boost')multiplier=Math.min(4,multiplier+1);
+      if(rewards[kind]) {gain=Math.min(oreLimit-win,Math.round(cost*rewards[kind]*multiplier));win+=gain}
+      if(kind==='boost')multiplier=Math.min(2,multiplier+1);
       steps.push({depth,x:position,kind,hp:health,gain,multiplier});
       if(health===0)break;
     }
     let mine=steps.find(step=>step.kind==='tnt');
     if(!mine){mine=steps[steps.length-1];mine.kind='tnt';const previous=steps.length>1?steps[steps.length-2].hp:max_hp;
       health=Math.max(0,previous-(16+Math.random()*9|0));mine.hp=health}
-    const mine_bonus=bet*5;mine.gain+=mine_bonus;win+=mine_bonus;
-    const guaranteed_win=bet*110;const guarantee=Math.max(0,guaranteed_win-win);
+    const mine_bonus=reservedBonus;mine.gain+=mine_bonus;win+=mine_bonus;
+    const guaranteed_win=Math.min(maxWin,Math.floor(cost*110/100));const guarantee=Math.max(0,guaranteed_win-win);
     steps[steps.length-1].gain+=guarantee;win+=guarantee;
-    const cost=bet*100, start_balance=state.balance;
+    const start_balance=state.balance;
     const result={id:requestId(),bet:bet*100,cost,pickaxe,max_hp,steps,win,health,physics_seed:Math.random()*4294967296>>>0,
       depth:steps.length,multiplier,mine_bonus,guaranteed_win,start_balance,balance:start_balance-cost+win};
     state.previewHistory.unshift({id:result.id,bet:result.bet,cost,win,created_at:Date.now()/1000|0});

@@ -80,6 +80,21 @@ test('standalone preview plays a complete round and shares its balance/history',
   }finally {Math.random=prior}
 });
 
+test('a mine loses the stake once and never returns a bonus',async()=>{
+  let played=false;
+  const lost={...active,status:'lost',opened:[0],safe_count:0,payout:0,win:0,mines:[0,1,2],next_multiplier:0};
+  const ui=harness(async(url)=>{
+    if(url.includes('/reveal'))played=true;
+    return {round:played?lost:active,user:{balance:49000,rounds_count:played?1:0}};
+  });
+  await ui.game.enter();ui.$('mines-board').children[0].click();await settle();
+  assert.equal(ui.user.balance,49000);assert.equal(ui.game.active,false);
+  assert.equal(ui.$('mines-payout').textContent,'0 ₽');
+  assert.equal(ui.$('mines-status').textContent,'Мина! Ставка 10 ₽ проиграна.');
+  assert.ok(ui.$('mines-board').children.every(e=>e.disabled));
+  await ui.game.enter();assert.equal(ui.user.balance,49000);
+});
+
 test('payouts use kopeks with a 96% factor and round down',()=>{
   assert.equal(payout(1000,3,0),0);assert.equal(payout(1000,3,1),1100);
   assert.equal(payout(1000,5,1),1200);assert.equal(payout(1000,7,1),1333);

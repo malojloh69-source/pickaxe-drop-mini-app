@@ -67,7 +67,18 @@
       $('wallet-submit').disabled=false;$('wallet-close').disabled=false;$('wallet-amount').value='';
       $('wallet-error').textContent='';$('wallet-form-step').classList.remove('hidden');
       $('wallet-contact-step').classList.add('hidden');$('wallet-copy-text').classList.add('hidden');
-      $('wallet-modal').classList.remove('hidden');modalChanged();$('wallet-amount').focus();
+      $('wallet-modal').classList.remove('hidden');
+      if(kind==='withdraw')showWithdrawal();
+      modalChanged();(kind==='withdraw'?$('wallet-manager'):$('wallet-amount')).focus();
+    }
+    function showWithdrawal() {
+      $('wallet-form-step').classList.add('hidden');$('wallet-contact-step').classList.remove('hidden');
+      $('wallet-modal').setAttribute('aria-labelledby','wallet-contact-title');
+      $('wallet-contact-kicker').textContent='ВЫВОД';
+      $('wallet-contact-title').textContent='Вывод через менеджера';
+      $('wallet-contact-description').textContent=manager?`Чтобы вывести деньги, напиши менеджеру @${manager}.`:'Чтобы вывести деньги, напиши менеджеру. Контакт пока не указан.';
+      $('wallet-manager').textContent=manager?`@${manager}`:'Менеджер не указан';$('wallet-manager').disabled=!manager;
+      ['wallet-contact-amount','wallet-request-number','wallet-contact-note','wallet-copy'].forEach(id=>$(id).classList.add('hidden'));
     }
     function close() {
       if(walletBusy||welcomeBusy)return false;
@@ -116,25 +127,26 @@
     function showContact(data) {
       savedRequest=data.request;manager=data.manager_username||manager;
       deps.account(data.user);
+      if(data.contact_only||savedRequest?.kind==='withdraw'){savedRequest=null;showWithdrawal();return}
       $('wallet-form-step').classList.add('hidden');$('wallet-contact-step').classList.remove('hidden');
       $('wallet-modal').setAttribute('aria-labelledby','wallet-contact-title');
       const deposit=savedRequest.kind==='deposit';
+      $('wallet-contact-kicker').textContent='ЗАЯВКА ПРИНЯТА';
+      ['wallet-contact-amount','wallet-request-number','wallet-contact-note','wallet-copy'].forEach(id=>$(id).classList.remove('hidden'));
+      $('wallet-manager').disabled=false;
       $('wallet-contact-title').textContent=deposit?'Пополнение через менеджера':'Вывод через менеджера';
       $('wallet-contact-description').textContent=deposit?'Напиши менеджеру, чтобы согласовать пополнение.':'Напиши менеджеру, чтобы согласовать вывод.';
       $('wallet-contact-amount').textContent=`${deps.money(savedRequest.amount)} ₽`;
       $('wallet-request-number').textContent=`Заявка № ${savedRequest.id.slice(0,8).toUpperCase()}`;
       $('wallet-manager').textContent=`@${manager}`;
-      $('wallet-contact-note').textContent=deposit?'Менеджер подтвердит пополнение после оплаты.':'Сумма зарезервирована до решения менеджера.';
+      $('wallet-contact-note').textContent='Менеджер подтвердит пополнение после оплаты.';
       $('wallet-copy').textContent='Скопировать заявку';$('wallet-manager').focus();
     }
     async function submitWallet(event) {
-      event.preventDefault();if(walletBusy||!walletOpen||deps.blocked())return;
+      event.preventDefault();if(walletBusy||!walletOpen||deps.blocked()||kind==='withdraw')return;
       const value=$('wallet-amount').value.trim().replace(',','.');
       if(!/^\d{1,7}(?:\.\d{1,2})?$/.test(value)||Number(value)<1||Number(value)>1000000) {
         $('wallet-error').textContent='Укажи сумму от 1 до 1 000 000 ₽.';return;
-      }
-      if(kind==='withdraw'&&Math.round(Number(value)*100)>deps.balance()) {
-        $('wallet-error').textContent='Сумма вывода превышает баланс.';return;
       }
       if(!manager) {$('wallet-error').textContent='Менеджер пока не указан.';return}
       walletBusy=true;deps.busy(true);$('wallet-submit').disabled=true;$('wallet-close').disabled=true;$('wallet-amount').disabled=true;

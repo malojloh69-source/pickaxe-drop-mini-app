@@ -76,20 +76,18 @@ class AdminAndWagerTests(unittest.TestCase):
         self.callback(calls[-1].args[1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"])
         self.assertEqual(self.call("/api/me")[1]["user"]["balance"], 0)
 
-    def test_admin_confirms_deposits_and_refunds_withdrawals_once(self):
+    def test_admin_confirms_deposits_and_withdrawal_contact_keeps_balance(self):
         self.message("/ClezzyKryt")
         with patch("main.MANAGER_USERNAME", "Valid_Manager"):
             request = self.call("/api/wallet/request", {"kind": "deposit", "amount": "750,25", "request_id": str(uuid.uuid4())})[1]["request"]
             for _ in range(2):
                 self.callback(f"adm:resolve:{request['id']}:1")
             self.assertEqual(self.call("/api/me")[1]["user"]["balance"], 125025)
-            withdrawal = self.call("/api/wallet/request", {"kind": "withdraw", "amount": "500", "request_id": str(uuid.uuid4())})[1]["request"]
-            self.assertEqual(self.call("/api/me")[1]["user"]["balance"], 75025)
-            for _ in range(2):
-                self.callback(f"adm:resolve:{withdrawal['id']}:0")
+            withdrawal = self.call("/api/wallet/request", {"kind": "withdraw", "amount": "500", "request_id": str(uuid.uuid4())})[1]
+            self.assertIsNone(withdrawal["request"])
             self.assertEqual(self.call("/api/me")[1]["user"]["balance"], 125025)
         with self.server.db() as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM admin_audit").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM admin_audit").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT DISTINCT actor_id FROM admin_audit").fetchone()[0], 99)
         for action in ("requests:pending:0", "requests:completed:0", "requests:cancelled:0", "users:0", "user:42", "history:42", "stats", "audit", "search"):
             self.assertEqual(self.callback("adm:" + action)[-1].args[0], "editMessageText")

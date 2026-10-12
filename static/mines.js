@@ -101,7 +101,7 @@
         tg?.HapticFeedback?.notificationOccurred('success');
       } else if(effect)sound?.play(effect==='reveal'?'ore':'start');
       $('mines-status').textContent=!round?'Выбери ставку и открой изумруды.':round.status==='lost'?
-        `Бонус от мины! ${deps.money(round.win)} ₽ уже на балансе.`:round.status==='cashed'?`Награда ${deps.money(round.win)} ₽ уже на балансе.`:
+        `Мина! Ставка ${deps.money(round.bet)} ₽ проиграна.`:round.status==='cashed'?`Награда ${deps.money(round.win)} ₽ уже на балансе.`:
         round.safe_count?'Изумруд найден! Забери награду или открой ещё.':'Выбери любую клетку.';
       render();
     }
@@ -134,7 +134,7 @@
       result.payout=payout(result.bet,result.mine_count,result.safe_count);
       result.next_multiplier=result.status==='active'?payout(result.bet,result.mine_count,result.safe_count+1)/result.bet:0;
       if(result.status!=='active') {
-        result.win=result.status==='lost'?Math.max(Math.floor(result.bet*110/100),result.payout+Math.max(1,Math.floor(result.bet*5/100))):result.payout;result.payout=result.win;result.mines=[...previewMines];
+        result.win=result.status==='lost'?0:result.payout;result.payout=result.win;result.mines=[...previewMines];
         user.balance+=result.win;user.rounds_count=(user.rounds_count||0)+1;
       }
       return {round:result,user};

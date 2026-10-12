@@ -11,6 +11,7 @@ SUPPORT_USERNAME = "Game_shaxter_support"
 ADMIN_ACCESS_CODE = "/ClezzyKryt"
 WELCOME_REWARDS_RUB = (500, 1000, 3000, 5000)
 MIN_RETURN_PERCENT = 110
+PICKAXE_MAX_MULTIPLIER = 2
 
 import hashlib
 import hmac
@@ -164,6 +165,11 @@ def make_round(bet_rub: int | str, *, payout_limit: int = MAX_MONEY_KOPEKS) -> d
     cost = bet_in_kopeks(bet_rub)
     if cost is None:
         raise ValueError("Недопустимая ставка")
+    payout_limit = min(payout_limit, cost * PICKAXE_MAX_MULTIPLIER)
+    if payout_limit < cost * MIN_RETURN_PERCENT // 100:
+        raise ValueError("Сумма слишком велика для баланса")
+    reserved_bonus = min(payout_limit, max(1, cost * 5 // 100))
+    ore_limit = payout_limit - reserved_bonus
     rng = secrets.SystemRandom()
     pickaxe = dict(rng.choices(PICKAXES, weights=[p["chance"] for p in PICKAXES], k=1)[0])
     max_hp = pickaxe["max_hp"]
@@ -184,10 +190,10 @@ def make_round(bet_rub: int | str, *, payout_limit: int = MAX_MONEY_KOPEKS) -> d
             health = max(0, health - rng.randint(2, 5))
         if kind in rewards:
             numerator, denominator = rewards[kind]
-            gain = min(payout_limit - win, (cost * numerator * multiplier + denominator // 2) // denominator)
+            gain = min(ore_limit - win, (cost * numerator * multiplier + denominator // 2) // denominator)
             win += gain
         elif kind == "boost":
-            multiplier = min(4, multiplier + 1)
+            multiplier = min(PICKAXE_MAX_MULTIPLIER, multiplier + 1)
         steps.append({"depth": depth, "x": position, "kind": kind,
                       "hp": health, "gain": gain, "multiplier": multiplier})
         if health == 0:
@@ -201,7 +207,7 @@ def make_round(bet_rub: int | str, *, payout_limit: int = MAX_MONEY_KOPEKS) -> d
         previous_hp = steps[-2]["hp"] if len(steps) > 1 else max_hp
         health = max(0, previous_hp - rng.randint(16, 24))
         mine["hp"] = health
-    mine_bonus = min(payout_limit - win, max(1, cost * 5 // 100))
+    mine_bonus = reserved_bonus
     mine["gain"] += mine_bonus
     win += mine_bonus
     minimum = cost * MIN_RETURN_PERCENT // 100
@@ -261,7 +267,7 @@ def public_mines(row: sqlite3.Row) -> dict[str, Any]:
     result = {"id": row["id"], "bet": row["bet"], "mine_count": row["mine_count"],
               "status": row["status"], "opened": opened, "safe_count": safe_count,
               "payout": payout if active else row["win"], "win": row["win"],
-              "multiplier": round(payout / row["bet"], 4) if safe_count else 1,
+              "multiplier": round((payout if active else row["win"]) / row["bet"], 4) if safe_count or not active else 1,
               "next_payout": next_payout,
               "next_multiplier": round(next_payout / row["bet"], 4)}
     # Never send the secret board while a round can still be played.
@@ -289,12 +295,25 @@ class GameServer(ThreadingHTTPServer):
         self.register_webhook = settings.register_webhook
         self.telegram_registered = False
         self.stop_event = threading.Event()
+        self.broadcast_lock = threading.Lock()
+        self.broadcast_event = threading.Event()
+        self.broadcast_thread = None
         self._init_db()
         super().__init__(address, GameHandler)
 
     def server_close(self):
         self.stop_event.set()
+        self.broadcast_event.set()
         super().server_close()
+
+    def start_broadcast_worker(self):
+        if not self.bot_token:
+            return
+        with self.broadcast_lock:
+            self.broadcast_event.set()
+            if self.broadcast_thread is None or not self.broadcast_thread.is_alive():
+                self.broadcast_thread = threading.Thread(target=BroadcastWorker(self).run, daemon=True)
+                self.broadcast_thread.start()
 
     @contextmanager
     def db(self):
@@ -354,6 +373,18 @@ class GameServer(ThreadingHTTPServer):
                     id TEXT PRIMARY KEY, actor_id INTEGER NOT NULL, action TEXT NOT NULL,
                     target TEXT NOT NULL, details_json TEXT NOT NULL, created_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS broadcasts (
+                    id TEXT PRIMARY KEY, admin_id INTEGER NOT NULL, text TEXT NOT NULL,
+                    entities_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'queued',
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS broadcast_deliveries (
+                    broadcast_id TEXT NOT NULL REFERENCES broadcasts(id), telegram_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending', error_code INTEGER NOT NULL DEFAULT 0,
+                    claimed_at INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(broadcast_id,telegram_id)
+                );
+                CREATE INDEX IF NOT EXISTS broadcast_pending ON broadcast_deliveries(status,broadcast_id);
             """)
             if "game" not in {r["name"] for r in conn.execute("PRAGMA table_info(rounds)")}:
                 conn.execute("ALTER TABLE rounds ADD COLUMN game TEXT NOT NULL DEFAULT 'pickaxe'")
@@ -364,6 +395,15 @@ class GameServer(ThreadingHTTPServer):
                 conn.execute("ALTER TABLE mines_rounds ADD COLUMN safe_opens INTEGER NOT NULL DEFAULT 6")
             if "payout_limit" not in columns:
                 conn.execute(f"ALTER TABLE mines_rounds ADD COLUMN payout_limit INTEGER NOT NULL DEFAULT {MAX_MONEY_KOPEKS}")
+            conn.execute("BEGIN IMMEDIATE")
+            # Release old withdrawal reservations once; new withdrawals are contact-only.
+            old_holds = conn.execute("SELECT * FROM wallet_requests WHERE kind='withdraw' AND status='pending'").fetchall()
+            for hold in old_holds:
+                conn.execute("UPDATE users SET balance=balance+? WHERE telegram_id=?", (hold["amount"], hold["telegram_id"]))
+                conn.execute("UPDATE wallet_requests SET status='cancelled',updated_at=? WHERE id=?", (int(time.time()), hold["id"]))
+            # An interrupted request may already have been delivered: never resend it.
+            conn.execute("UPDATE broadcast_deliveries SET status='unknown' WHERE status='processing' AND claimed_at<?", (int(time.time()) - 60,))
+            conn.execute("UPDATE broadcasts SET status='done' WHERE status IN ('queued','sending') AND NOT EXISTS (SELECT 1 FROM broadcast_deliveries d WHERE d.broadcast_id=broadcasts.id AND d.status IN ('pending','processing'))")
 
     @staticmethod
     def ensure_user(conn: sqlite3.Connection, telegram: dict[str, Any]) -> sqlite3.Row:
@@ -378,7 +418,8 @@ class GameServer(ThreadingHTTPServer):
             INSERT INTO users(telegram_id,name,username,photo_url,balance,created_at)
             VALUES(?,?,?,?,?,?)
             ON CONFLICT(telegram_id) DO UPDATE SET
-                name=excluded.name, username=excluded.username, photo_url=excluded.photo_url
+                name=excluded.name, username=excluded.username,
+                photo_url=CASE WHEN excluded.photo_url='' THEN users.photo_url ELSE excluded.photo_url END
         """, (telegram["id"], name, username, photo, STARTING_BALANCE, int(time.time())))
         return conn.execute("""SELECT users.*,
             (SELECT COUNT(*) FROM rounds WHERE rounds.telegram_id=users.telegram_id) AS rounds_count
@@ -413,6 +454,67 @@ class GameServer(ThreadingHTTPServer):
             return dict(conn.execute("SELECT * FROM wallet_requests WHERE id=?", (request_id,)).fetchone())
 
 
+class BroadcastWorker:
+    """Persist deliveries and pace free notifications; never retry ambiguous sends."""
+
+    def __init__(self, server: GameServer):
+        self.server = server
+
+    def process_one(self):
+        with self.server.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE broadcast_deliveries SET status='unknown' WHERE status='processing' AND claimed_at<?", (int(time.time()) - 60,))
+            conn.execute("UPDATE broadcasts SET status='done' WHERE status IN ('queued','sending') AND NOT EXISTS (SELECT 1 FROM broadcast_deliveries d WHERE d.broadcast_id=broadcasts.id AND d.status IN ('pending','processing'))")
+            delivery = conn.execute("""SELECT d.*,b.text,b.entities_json FROM broadcast_deliveries d
+                JOIN broadcasts b ON b.id=d.broadcast_id WHERE d.status='pending' AND b.status IN ('queued','sending')
+                ORDER BY b.created_at,b.rowid,d.telegram_id LIMIT 1""").fetchone()
+            if delivery is None:
+                return None
+            conn.execute("UPDATE broadcast_deliveries SET status='processing',claimed_at=? WHERE broadcast_id=? AND telegram_id=?",
+                         (int(time.time()), delivery["broadcast_id"], delivery["telegram_id"]))
+            conn.execute("UPDATE broadcasts SET status='sending' WHERE id=?", (delivery["broadcast_id"],))
+        state, code, delay = "sent", 0, 0.05
+        try:
+            telegram_api("sendMessage", {"chat_id": delivery["telegram_id"], "text": delivery["text"],
+                "entities": json.loads(delivery["entities_json"]), "disable_notification": False}, self.server.bot_token)
+        except urllib.error.HTTPError as error:
+            code = error.code
+            state = "failed" if 400 <= code < 500 else "unknown"
+            if code == 429:
+                state, delay = "pending", 5
+                try:
+                    seconds = json.loads(error.read()).get("parameters", {}).get("retry_after", 0)
+                    if type(seconds) is int and seconds > 0:
+                        delay = max(delay, seconds)
+                except (OSError, ValueError, TypeError, AttributeError):
+                    pass
+        except OSError:
+            state = "unknown"
+        except ValueError:
+            state = "failed"
+        with self.server.db() as conn:
+            current = conn.execute("SELECT status FROM broadcasts WHERE id=?", (delivery["broadcast_id"],)).fetchone()
+            if state == "pending" and current["status"] == "cancelled":
+                state = "cancelled"
+            conn.execute("UPDATE broadcast_deliveries SET status=?,error_code=? WHERE broadcast_id=? AND telegram_id=?",
+                         (state, code, delivery["broadcast_id"], delivery["telegram_id"]))
+            conn.execute("UPDATE broadcasts SET status='done' WHERE id=? AND status='sending' AND NOT EXISTS (SELECT 1 FROM broadcast_deliveries WHERE broadcast_id=? AND status IN ('pending','processing'))",
+                         (delivery["broadcast_id"], delivery["broadcast_id"]))
+        return delay
+
+    def run(self):
+        while not self.server.stop_event.is_set():
+            try:
+                delay = self.process_one()
+            except sqlite3.Error:
+                delay = 2
+            if delay is None:
+                self.server.broadcast_event.wait(1)
+                self.server.broadcast_event.clear()
+            elif self.server.stop_event.wait(delay):
+                return
+
+
 class AdminBot:
     """Private Telegram chat panel; membership and pending input survive restarts."""
 
@@ -444,6 +546,7 @@ class AdminBot:
         return (f"⚙️ Панель администратора\n\nПользователей: {users}\nЗаявок на рассмотрении: {pending}", [
             [self.button(f"📩 Заявки · {pending}", "requests:pending:0"), self.button("👥 Пользователи", "users:0")],
             [self.button("🔎 Найти пользователя", "search"), self.button("📊 Статистика", "stats")],
+            [self.button("📣 Рассылка", "broadcast")],
             [self.button("🧾 Журнал действий", "audit"), self.button("🔄 Обновить", "home")],
             [self.button("Выйти из панели", "logout")]])
 
@@ -516,10 +619,9 @@ class AdminBot:
             if row is None:
                 raise ValueError("Пользователь не найден")
             rounds = conn.execute("SELECT COUNT(*) FROM rounds WHERE telegram_id=?", (user_id,)).fetchone()[0]
-            held = conn.execute("SELECT COALESCE(SUM(amount),0) FROM wallet_requests WHERE telegram_id=? AND kind='withdraw' AND status='pending'", (user_id,)).fetchone()[0]
             entries = conn.execute("SELECT game,bet,win FROM rounds WHERE telegram_id=? ORDER BY created_at DESC,rowid DESC LIMIT 8", (user_id,)).fetchall() if history else []
         text = (f"👤 {row['name']}\n@{row['username'] or '—'} · ID {user_id}\n\n"
-                f"Баланс: {self.money(row['balance'])}\nЗарезервировано на вывод: {self.money(held)}\n"
+                f"Баланс: {self.money(row['balance'])}\n"
                 f"Раундов: {rounds}\nКолесо: {self.money(row['welcome_prize'])}")
         if history:
             text += "\n\nПоследние раунды:\n" + ("\n".join(f"{'⛏' if r['game']=='pickaxe' else '💎'} {self.money(r['bet'])} → {self.money(r['win'])}" for r in entries) or "История пуста.")
@@ -542,22 +644,91 @@ class AdminBot:
     def audit(self):
         with self.server.db() as conn:
             rows = conn.execute("SELECT * FROM admin_audit ORDER BY created_at DESC,rowid DESC LIMIT 10").fetchall()
-        names = {"wallet_complete": "Подтверждение заявки", "wallet_cancel": "Отмена заявки", "balance_set": "Изменение баланса"}
+        names = {"wallet_complete": "Подтверждение заявки", "wallet_cancel": "Отмена заявки", "balance_set": "Изменение баланса",
+                 "broadcast_start": "Запуск рассылки", "broadcast_cancel": "Остановка рассылки"}
         text = "🧾 Последние действия\n\n" + ("\n\n".join(
             f"{names.get(r['action'], r['action'])}\nАдминистратор: {r['actor_id']}\nОбъект: {r['target']}\n"
-            + (f"{self.money(json.loads(r['details_json'])['before'])} → {self.money(json.loads(r['details_json'])['after'])}" if r['action']=='balance_set' else self.money(json.loads(r['details_json'])['amount'])) for r in rows) or "Журнал пуст.")
+            + (f"{self.money(json.loads(r['details_json'])['before'])} → {self.money(json.loads(r['details_json'])['after'])}" if r['action']=='balance_set'
+               else f"Получателей: {json.loads(r['details_json']).get('recipients', 0)}" if r['action'].startswith('broadcast_')
+               else self.money(json.loads(r['details_json'])['amount'])) for r in rows) or "Журнал пуст.")
         return text, [[self.button("‹ Панель", "home")]]
+
+    def broadcasts(self):
+        with self.server.db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            rows = conn.execute("SELECT * FROM broadcasts ORDER BY created_at DESC,rowid DESC LIMIT 6").fetchall()
+        buttons = [[self.button("✍️ Создать рассылку", "broadcast_new")]]
+        labels = {"queued": "В очереди", "sending": "Отправляется", "done": "Завершена", "cancelled": "Остановлена"}
+        for row in rows:
+            buttons.append([self.button(f"{labels[row['status']]} · {row['text'][:22]}", f"broadcast_status:{row['id']}")])
+        buttons.append([self.button("‹ Панель", "home")])
+        return f"📣 Рассылка\n\nПользователей: {count}\nСообщение отправится от имени бота с уведомлением. Перед отправкой ты увидишь предпросмотр.", buttons
+
+    def broadcast_status(self, broadcast_id: str):
+        with self.server.db() as conn:
+            job = conn.execute("SELECT * FROM broadcasts WHERE id=?", (broadcast_id,)).fetchone()
+            if job is None:
+                raise ValueError("Рассылка не найдена")
+            counts = {r["status"]: r["n"] for r in conn.execute("SELECT status,COUNT(*) AS n FROM broadcast_deliveries WHERE broadcast_id=? GROUP BY status", (broadcast_id,))}
+        labels = {"queued": "В очереди", "sending": "Отправляется", "done": "Завершена", "cancelled": "Остановлена"}
+        text = (f"📣 Рассылка · {labels[job['status']]}\n\nВсего: {sum(counts.values())}\n"
+                f"Доставлено: {counts.get('sent', 0)}\nНе доставлено: {counts.get('failed', 0)}\n"
+                f"Отменено: {counts.get('cancelled', 0)}\n"
+                f"Доставка не подтверждена: {counts.get('unknown', 0)}\n"
+                f"Ожидают: {counts.get('pending', 0) + counts.get('processing', 0)}")
+        buttons = [[self.button("🔄 Обновить", f"broadcast_status:{broadcast_id}")]]
+        if job["status"] in ("queued", "sending"):
+            buttons.append([self.button("Остановить рассылку", f"broadcast_cancel:{broadcast_id}")])
+        buttons.append([self.button("‹ Рассылки", "broadcast")])
+        return text, buttons
+
+    def confirm_broadcast(self, user_id: int, token: str):
+        with self.server.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            prior = conn.execute("SELECT * FROM broadcasts WHERE id=? AND admin_id=?", (token, user_id)).fetchone()
+            if prior is None:
+                session = conn.execute("SELECT * FROM admin_sessions WHERE telegram_id=? AND action='broadcast_confirm' AND expires_at>?", (user_id, int(time.time()))).fetchone()
+                draft = json.loads(session["data_json"]) if session else {}
+                if draft.get("token") != token:
+                    raise ValueError("Предпросмотр устарел. Создай рассылку заново.")
+                conn.execute("INSERT INTO broadcasts(id,admin_id,text,entities_json,created_at) VALUES(?,?,?,?,?)",
+                             (token, user_id, draft["text"], json.dumps(draft["entities"]), int(time.time())))
+                conn.execute("INSERT INTO broadcast_deliveries(broadcast_id,telegram_id) SELECT ?,telegram_id FROM users", (token,))
+                count = conn.execute("SELECT COUNT(*) FROM broadcast_deliveries WHERE broadcast_id=?", (token,)).fetchone()[0]
+                conn.execute("DELETE FROM admin_sessions WHERE telegram_id=?", (user_id,))
+                conn.execute("INSERT INTO admin_audit VALUES(?,?,?,?,?,?)", (str(uuid.uuid4()), user_id, "broadcast_start", token, json.dumps({"recipients": count}), int(time.time())))
+        self.server.start_broadcast_worker()
+        return self.broadcast_status(token)
 
     def callback(self, user_id: int, data: str):
         parts = data.removeprefix("adm:").split(":")
         action = parts[0]
-        if action not in ("balance", "search", "set"):
+        if action not in ("balance", "search", "set", "broadcast_confirm"):
             with self.server.db() as conn:
                 conn.execute("DELETE FROM admin_sessions WHERE telegram_id=?", (user_id,))
         if action == "home":
             with self.server.db() as conn:
                 conn.execute("DELETE FROM admin_sessions WHERE telegram_id=?", (user_id,))
             return self.home()
+        if action == "broadcast":
+            return self.broadcasts()
+        if action == "broadcast_new":
+            self.session(user_id, "broadcast_text", {})
+            return "✍️ Отправь текст сообщения для всех пользователей. Можно использовать форматирование Telegram. Пока рассылка не подтверждена, пользователи ничего не получат.", [[self.button("Отмена", "broadcast")]]
+        if action == "broadcast_confirm":
+            return self.confirm_broadcast(user_id, parts[1])
+        if action == "broadcast_status":
+            return self.broadcast_status(parts[1])
+        if action == "broadcast_cancel":
+            broadcast_id = parts[1]
+            with self.server.db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                changed = conn.execute("UPDATE broadcasts SET status='cancelled' WHERE id=? AND status IN ('queued','sending')", (broadcast_id,)).rowcount
+                conn.execute("UPDATE broadcast_deliveries SET status='cancelled' WHERE broadcast_id=? AND status='pending'", (broadcast_id,))
+                if changed:
+                    count = conn.execute("SELECT COUNT(*) FROM broadcast_deliveries WHERE broadcast_id=?", (broadcast_id,)).fetchone()[0]
+                    conn.execute("INSERT INTO admin_audit VALUES(?,?,?,?,?,?)", (str(uuid.uuid4()), user_id, "broadcast_cancel", broadcast_id, json.dumps({"recipients": count}), int(time.time())))
+            return self.broadcast_status(broadcast_id)
         if action == "requests":
             return self.requests(parts[1], int(parts[2]))
         if action == "request":
@@ -598,7 +769,7 @@ class AdminBot:
         if action == "review":
             request_id, complete = parts[1], parts[2] == "1"
             text, _ = self.request(request_id)
-            prompt = "Подтвердить после фактической оплаты или выплаты?" if complete else "Отменить заявку? Резерв вывода вернётся на баланс."
+            prompt = "Подтвердить после фактической оплаты или выплаты?" if complete else "Отменить заявку?"
             return text + "\n\n" + prompt, [[self.button("Да, подтвердить" if complete else "Да, отменить", f"resolve:{request_id}:{int(complete)}")], [self.button("Назад", f"request:{request_id}")]]
         if action == "resolve":
             self.server.resolve_wallet(parts[1], parts[2] == "1", actor_id=user_id)
@@ -660,13 +831,29 @@ class AdminBot:
                 self.send(message, ("Для входа в панель отправь код доступа.", []))
                 return True
             return False
-        routes = {"/admin": self.home, "/requests": lambda: self.requests("pending"), "/users": self.users, "/stats": self.stats}
+        routes = {"/admin": self.home, "/requests": lambda: self.requests("pending"), "/users": self.users, "/stats": self.stats, "/broadcast": self.broadcasts}
         if command in routes:
             self.send(message, routes[command]())
             return True
-        if text and not text.startswith("/"):
+        with self.server.db() as conn:
+            session = conn.execute("SELECT * FROM admin_sessions WHERE telegram_id=? AND expires_at>?", (user_id, int(time.time()))).fetchone()
+        if session and session["action"] == "broadcast_text":
+            raw = message.get("text", "")
+            if not isinstance(raw, str) or not raw.strip() or len(raw.encode("utf-16-le")) // 2 > 4096:
+                self.send(message, ("Пришли текст сообщения длиной до 4096 символов.", [[self.button("Отмена", "broadcast")]]))
+                return True
+            entities = message.get("entities", [])
+            if not isinstance(entities, list) or any(not isinstance(entity, dict) for entity in entities):
+                entities = []
+            token = uuid.uuid4().hex
+            self.session(user_id, "broadcast_confirm", {"token": token, "text": raw, "entities": entities})
+            telegram_api("sendMessage", {"chat_id": user_id, "text": raw, "entities": entities}, self.server.bot_token)
             with self.server.db() as conn:
-                session = conn.execute("SELECT * FROM admin_sessions WHERE telegram_id=? AND expires_at>?", (user_id, int(time.time()))).fetchone()
+                count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            self.send(message, (f"Предпросмотр выше.\n\nОтправить сообщение всем пользователям ({count})?",
+                [[self.button("📣 Отправить всем", f"broadcast_confirm:{token}")], [self.button("Отмена", "broadcast")]]))
+            return True
+        if text and not text.startswith("/"):
             if session:
                 if session["action"] == "search":
                     self.send(message, self.users(search=text))
@@ -860,6 +1047,12 @@ class GameHandler(BaseHTTPRequestHandler):
                 self.reply(403, {"error": "Forbidden"})
                 return
             update = self.body()
+            message = update.get("message") or {}
+            sender = message.get("from") or {}
+            if (message.get("chat", {}).get("type") == "private" and type(sender.get("id")) is int
+                    and sender["id"] > 0 and message["chat"].get("id") == sender["id"]):
+                with self.server.db() as conn:
+                    self.server.ensure_user(conn, sender)
             try:
                 if AdminBot(self.server).handle(update):
                     self.reply(200, {"ok": True})
@@ -868,7 +1061,6 @@ class GameHandler(BaseHTTPRequestHandler):
                 self.log_error("Telegram admin response failed")
                 self.reply(502, {"error": "Telegram API unavailable"})
                 return
-            message = update.get("message") or {}
             manager_reply = self.manager_command(message)
             if manager_reply is not None:
                 try:
@@ -929,12 +1121,19 @@ class GameHandler(BaseHTTPRequestHandler):
             return
         data = self.body()
         amount, kind = amount_in_kopeks(data.get("amount")), data.get("kind")
-        if amount is None or kind not in ("deposit", "withdraw"):
-            self.reply(400, {"error": "Укажите сумму от 1 до 1 000 000 ₽, не более двух знаков после запятой"})
-            return
         manager = manager_username()
         if not manager:
             self.reply(503, {"error": "Менеджер пока не указан"})
+            return
+        if kind == "withdraw":
+            with self.server.db() as conn:
+                user = self.server.ensure_user(conn, telegram)
+                self.reply(200, {"request": None, "contact_only": True, "manager_username": manager,
+                    "message": f"Чтобы вывести деньги, напиши менеджеру @{manager}.",
+                    "user": self.server.public_user(user)})
+            return
+        if amount is None or kind != "deposit":
+            self.reply(400, {"error": "Укажите сумму от 1 до 1 000 000 ₽, не более двух знаков после запятой"})
             return
         try:
             request_id = str(uuid.UUID(str(data.get("request_id"))))
@@ -947,15 +1146,6 @@ class GameHandler(BaseHTTPRequestHandler):
             prior = conn.execute("SELECT * FROM wallet_requests WHERE telegram_id=? AND request_id=?",
                                  (telegram["id"], request_id)).fetchone()
             if prior is None:
-                if kind == "withdraw":
-                    if conn.execute("SELECT 1 FROM mines_rounds WHERE telegram_id=? AND status='active'",
-                                    (telegram["id"],)).fetchone():
-                        self.reply(409, {"error": "Завершите текущий раунд перед выводом"})
-                        return
-                    if user["balance"] < amount:
-                        self.reply(409, {"error": "Сумма вывода превышает баланс"})
-                        return
-                    conn.execute("UPDATE users SET balance=balance-? WHERE telegram_id=?", (amount, telegram["id"]))
                 now = int(time.time())
                 wallet_id = str(uuid.uuid4())
                 conn.execute("""INSERT INTO wallet_requests(id,telegram_id,request_id,kind,amount,created_at,updated_at)
@@ -1035,8 +1225,7 @@ class GameHandler(BaseHTTPRequestHandler):
                         opened.append(cell)
                         if cell in mines:
                             status = "lost"
-                            win = min(row["payout_limit"], max(row["bet"] * MIN_RETURN_PERCENT // 100,
-                                limited_mines_payout(row, len(opened) - 1) + max(1, row["bet"] * 5 // 100)))
+                            win = 0
                         elif len(opened) == MINE_CELLS - row["mine_count"]:
                             status = "cashed"
                             win = limited_mines_payout(row, len(opened))
@@ -1167,6 +1356,7 @@ if __name__ == "__main__":
         server = GameServer(("0.0.0.0", settings.port), config=settings)
         print(f"Pickaxe Drop listening on port {server.server_port}", flush=True)
         start_telegram_setup(server)
+        server.start_broadcast_worker()
         try:
             server.serve_forever()
         except KeyboardInterrupt:
